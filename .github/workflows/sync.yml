@@ -1,18 +1,23 @@
 # ============================================================
-#  Dat file nay tai duong dan:  .github/workflows/sync.yml
-#  (tao thu muc .github/workflows trong repo cua ban)
+#  .github/workflows/sync.yml
+#
+#  TAI SAO CHI CON 1 CRON/GIO:
+#  Cron cu la '5,20,35,50 * * * *' (96 run/ngay) nhung GitHub bo gan het:
+#  24-25/08 chi chay ~35 run/ngay, den 27/08 con 3 run/ngay, khoang cach
+#  giua 2 run len toi 8-10 tieng. Scheduled workflow la best-effort va bi
+#  throttle theo tan suat. Nen: chi xin 1 trigger/gio (GitHub gan nhu luon
+#  cho chay), roi giu do min 15 phut bang vong lap sleep BEN TRONG job.
+#  Repo public => Actions minutes mien phi khong gioi han.
 # ============================================================
 name: Tweet to Binance Square
 
 on:
   schedule:
-    # ~moi 15 phut. Tranh dau gio (phut :00) cho do bi tre.
-    # Luu y: GitHub chay theo gio UTC va co the tre 10-30 phut luc cao diem.
-    - cron: '5,20,35,50 * * * *'
-  workflow_dispatch:   # cho phep bam "Run workflow" de chay tay / test
+    - cron: '3 * * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write      # can quyen nay de luu lai state/last_id.txt
+  contents: write
 
 concurrency:
   group: tweet-sync
@@ -21,36 +26,58 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 70
     env:
-      # >>> DOI dong duoi thanh @username X cua ban (bo dau @) <<<
+      # >>> @username X cua ban (bo dau @) <<<
       TWITTER_USERNAME: "OnchainDataNerd"
+      # 4 vong x 15 phut = phu kin 1 gio, dung bang nhip cron cu.
+      ITERATIONS: "4"
+      SLEEP_SECONDS: "900"
+      # Truoc day de mac dinh 10. Neu lich bi bo nhieu gio va account tweet
+      # hon 10 bai, X tra ve 10 bai MOI NHAT roi last_id nhay thang len do
+      # => so bai o giua bi mat vinh vien. 100 la tran cua X API v2.
+      MAX_RESULTS: "100"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
 
       - name: Cai thu vien
         run: pip install requests requests-oauthlib
 
-      - name: Dong bo tweet -> Binance Square
+      - name: Dong bo tweet -> Binance Square (lap trong 1 gio)
         env:
           TWITTER_API_KEY:            ${{ secrets.TWITTER_API_KEY }}
           TWITTER_API_SECRET:         ${{ secrets.TWITTER_API_SECRET }}
           TWITTER_ACCESS_TOKEN:       ${{ secrets.TWITTER_ACCESS_TOKEN }}
           TWITTER_ACCESS_SECRET:      ${{ secrets.TWITTER_ACCESS_SECRET }}
           BINANCE_SQUARE_OPENAPI_KEY: ${{ secrets.BINANCE_SQUARE_OPENAPI_KEY }}
-        run: python tweet_to_square_ci.py
-
-      - name: Luu trang thai (neu thay doi)
         run: |
-          if [[ -n "$(git status --porcelain state/last_id.txt)" ]]; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add state/last_id.txt
-            git commit -m "update last tweet id [skip ci]"
-            git push
-          else
-            echo "Khong co thay doi state, bo qua commit."
-          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "::group::Vong $i/$ITERATIONS - $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+            # Mot vong loi KHONG duoc lam chet ca job: cac vong sau van phai chay.
+            python tweet_to_square_ci.py || echo "[!] Vong $i loi, se thu lai o vong sau."
+
+            if [[ -n "$(git status --porcelain state/)" ]]; then
+              git add state/
+              git commit -q -m "update last tweet id [skip ci]"
+            fi
+
+            # Push ca commit cua vong truoc neu lan do push that bai.
+            if [[ -n "$(git log --oneline origin/main..HEAD)" ]]; then
+              git pull --rebase -q origin main || true
+              git push -q && echo "Da luu state." || echo "[!] Push loi, thu lai vong sau."
+            else
+              echo "Khong co thay doi state."
+            fi
+
+            echo "::endgroup::"
+
+            if [[ "$i" -lt "$ITERATIONS" ]]; then sleep "$SLEEP_SECONDS"; fi
+          done

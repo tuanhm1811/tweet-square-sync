@@ -33,6 +33,10 @@ EXCLUDE     = os.environ.get("EXCLUDE", "retweets,replies")
 MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "10"))
 X_API_BASE  = os.environ.get("X_API_BASE", "https://api.twitter.com/2")  # loi thi doi sang https://api.x.com/2
 STATE_FILE  = Path(os.environ.get("STATE_FILE", "state/last_id.txt"))
+# Cache user_id de KHONG goi /users/by/username moi lan chay (endpoint nay
+# co han muc rat thap ~100 req/24h, du chay 15 phut/lan la cham tran).
+USER_ID_ENV  = os.environ.get("TWITTER_USER_ID", "").strip()
+USER_ID_FILE = Path(os.environ.get("USER_ID_FILE", "state/user_id.txt"))
 
 # Binance Square endpoints
 SQ_V1 = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi"
@@ -191,8 +195,23 @@ def post_to_square(text, photo_urls):
 
 
 # ---------- Main ----------
-def main():
+def resolve_user_id():
+    if USER_ID_ENV:
+        return USER_ID_ENV
+    try:
+        cached = USER_ID_FILE.read_text().strip()
+        if cached:
+            return cached
+    except FileNotFoundError:
+        pass
     uid = get_user_id(USERNAME)
+    USER_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    USER_ID_FILE.write_text(uid)
+    return uid
+
+
+def main():
+    uid = resolve_user_id()
     last = read_state()
 
     if last is None:
