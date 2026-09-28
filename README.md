@@ -1,7 +1,12 @@
 # Tweet → Binance Square Sync
 
 Tự động lấy **tweet mới** từ một tài khoản X (Twitter) — kèm ảnh — và **đăng lại lên Binance Square**.
-Chạy hoàn toàn miễn phí trên **GitHub Actions** (cron ~15 phút/lần), không cần server riêng.
+Chạy hoàn toàn miễn phí trên **GitHub Actions** (kiểm tra ~15 phút/lần), không cần server riêng.
+
+> **Mặc định KHÔNG cần X API** (không tốn credit): tweet được đọc qua
+> [FxTwitter](https://github.com/FxEmbed/FxEmbed) (`api.fxtwitter.com`), miễn phí, không cần key.
+> Đây là dịch vụ **không chính thức** — nếu nó sập/đổi, chuyển sang X API chính thức bằng
+> cách đặt `SOURCE: "xapi"` trong `sync.yml` và thêm 4 secret `TWITTER_*` (mục 2).
 
 - Đăng tối đa 4 ảnh/bài (giới hạn của Square).
 - Tweet có video/GIF → chỉ đăng phần chữ.
@@ -13,19 +18,19 @@ Chạy hoàn toàn miễn phí trên **GitHub Actions** (cron ~15 phút/lần), 
 
 ---
 
-## 1. Cần chuẩn bị: 5 secret
+## 1. Cần chuẩn bị: secret
 
 | Tên secret | Lấy ở đâu | Mô tả |
 |---|---|---|
-| `TWITTER_API_KEY` | X Developer Portal | API Key (Consumer Key) |
-| `TWITTER_API_SECRET` | X Developer Portal | API Key Secret (Consumer Secret) |
-| `TWITTER_ACCESS_TOKEN` | X Developer Portal | Access Token |
-| `TWITTER_ACCESS_SECRET` | X Developer Portal | Access Token Secret |
-| `BINANCE_SQUARE_OPENAPI_KEY` | Binance Square (creator) | Key gọi OpenAPI của Square |
+| `BINANCE_SQUARE_OPENAPI_KEY` | Binance Square (creator) | Key gọi OpenAPI của Square — **bắt buộc** |
+| `TWITTER_API_KEY` | X Developer Portal | Chỉ cần khi `SOURCE: "xapi"` |
+| `TWITTER_API_SECRET` | X Developer Portal | Chỉ cần khi `SOURCE: "xapi"` |
+| `TWITTER_ACCESS_TOKEN` | X Developer Portal | Chỉ cần khi `SOURCE: "xapi"` |
+| `TWITTER_ACCESS_SECRET` | X Developer Portal | Chỉ cần khi `SOURCE: "xapi"` |
 
 ---
 
-## 2. Lấy 4 key từ X (Twitter)
+## 2. (Chỉ khi dùng `SOURCE: "xapi"`) Lấy 4 key từ X (Twitter)
 
 1. Vào **https://developer.x.com** → đăng nhập bằng tài khoản X.
 2. Tạo **Project** và **App** (nếu chưa có).
@@ -64,7 +69,7 @@ không phải API Key giao dịch spot/futures thông thường.
 
 1. Fork repo này về tài khoản của bạn (hoặc dùng repo của bạn).
 2. Mở repo trên GitHub → **Settings** → **Secrets and variables** → **Actions**.
-3. Bấm **New repository secret**, thêm lần lượt **5 secret** ở mục 1 (đặt đúng tên, dán giá trị).
+3. Bấm **New repository secret**, thêm các secret cần thiết ở mục 1 (đặt đúng tên, dán giá trị).
 
 > Mỗi secret thêm riêng một lần. Tên phải **khớp chính xác** (viết hoa, có dấu gạch dưới).
 
@@ -109,11 +114,10 @@ Muốn thưa hơn, sửa dòng `cron` trong `sync.yml`, ví dụ mỗi giờ:
 pip install requests requests-oauthlib
 
 export TWITTER_USERNAME="OnchainDataNerd"
-export TWITTER_API_KEY="..."
-export TWITTER_API_SECRET="..."
-export TWITTER_ACCESS_TOKEN="..."
-export TWITTER_ACCESS_SECRET="..."
 export BINANCE_SQUARE_OPENAPI_KEY="..."
+# Chi khi dung X API chinh thuc:
+# export SOURCE="xapi" TWITTER_API_KEY="..." TWITTER_API_SECRET="..." \
+#        TWITTER_ACCESS_TOKEN="..." TWITTER_ACCESS_SECRET="..."
 
 python tweet_to_square_ci.py
 ```
@@ -127,8 +131,10 @@ python tweet_to_square_ci.py
 | Thông báo | Nguyên nhân / cách xử lý |
 |---|---|
 | `Thieu bien moi truong/secret: X` | Chưa thêm secret đó, hoặc gõ sai tên. |
-| `Khong lay duoc user id (401/403)` | Sai key X, hoặc app chưa cấp quyền Read. |
-| Lỗi đọc tweet `429` | Hết quota X API (gói Free) → giảm cron hoặc nâng gói Basic. |
+| `FxTwitter loi ...` / `Khong ket noi duoc FxTwitter` | FxTwitter tạm lỗi → bot tự thử lại vòng sau. Lỗi kéo dài nhiều ngày → chuyển `SOURCE: "xapi"`. |
+| `X API loi 401/403` | (xapi) Sai key X, hoặc app chưa cấp quyền Read. |
+| `X API loi 402` credits depleted | (xapi) Hết credit X API → nạp tiền, hoặc quay về `SOURCE: "fxtwitter"`. |
+| `X API loi 429` | (xapi) Vượt rate limit / quota X API. |
 | `code=220009` | Vượt giới hạn 100 bài/ngày của Square. |
 | `code=220014` | Vượt giới hạn upload ảnh trong ngày của Square. |
 | `code=20013` | Nội dung quá dài / không hợp lệ. |

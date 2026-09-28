@@ -6,6 +6,11 @@ Chay MOT LAN roi thoat — danh cho GitHub Actions (cron).
 Moi lan: doc tweet MOI tu X (kem anh) -> dang len Binance Square (kem anh)
 -> cap nhat state/last_id.txt.
 
+Nguon doc tweet (bien SOURCE):
+  - "fxtwitter" (mac dinh): MIEN PHI, khong can key X. Dung api.fxtwitter.com
+    (dich vu khong chinh thuc, co the thay doi/sap bat ky luc nao).
+  - "xapi": X API chinh thuc, can 4 key TWITTER_* va tra phi theo luot doc.
+
 Anh: lay tu anh dinh kem trong tweet (toi da 4 anh - dung gioi han cua Square).
      Tweet co video/GIF se chi dang phan chu (Square can luong rieng cho video).
      Neu upload anh loi, tu dong dang lai chi voi chu.
@@ -29,6 +34,11 @@ from requests_oauthlib import OAuth1
 
 # ---------- Cau hinh ----------
 USERNAME    = os.environ.get("TWITTER_USERNAME", "").lstrip("@")
+SOURCE      = os.environ.get("SOURCE", "fxtwitter").strip().lower()
+FX_API_BASE = os.environ.get("FX_API_BASE", "https://api.fxtwitter.com")
+# FxTwitter tra toi da 20 tweet/trang; 5 trang = 100 tweet la du bu khi bot
+# bi dung lau.
+FX_MAX_PAGES = int(os.environ.get("FX_MAX_PAGES", "5"))
 EXCLUDE     = os.environ.get("EXCLUDE", "retweets,replies")
 MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "10"))
 X_API_BASE  = os.environ.get("X_API_BASE", "https://api.twitter.com/2")  # loi thi doi sang https://api.x.com/2
@@ -69,8 +79,8 @@ SQ_ERR = {
 SQ_ACCOUNT_ERRORS = {"220003", "220009", "220014"}
 
 
-class XApiError(Exception):
-    pass
+class FetchError(Exception):
+    """Loi khi doc tweet (X API hoac FxTwitter)."""
 
 
 class SquareError(RuntimeError):
@@ -89,8 +99,12 @@ def env(n):
 if not USERNAME:
     sys.exit("[LOI] Chua dat TWITTER_USERNAME (sua trong file workflow sync.yml).")
 
-oauth = OAuth1(env("TWITTER_API_KEY"), env("TWITTER_API_SECRET"),
-               env("TWITTER_ACCESS_TOKEN"), env("TWITTER_ACCESS_SECRET"))
+if SOURCE not in ("fxtwitter", "xapi"):
+    sys.exit(f"[LOI] SOURCE='{SOURCE}' khong hop le (chon fxtwitter hoac xapi).")
+oauth = None
+if SOURCE == "xapi":
+    oauth = OAuth1(env("TWITTER_API_KEY"), env("TWITTER_API_SECRET"),
+                   env("TWITTER_ACCESS_TOKEN"), env("TWITTER_ACCESS_SECRET"))
 SQUARE_KEY = env("BINANCE_SQUARE_OPENAPI_KEY")
 SQ_HEADERS = {
     "X-Square-OpenAPI-Key": SQUARE_KEY,
@@ -149,7 +163,7 @@ def explain_x_error(r):
 def get_user_id(u):
     r = requests.get(f"{X_API_BASE}/users/by/username/{u}", auth=oauth, timeout=30)
     if r.status_code != 200:
-        raise XApiError(explain_x_error(r))
+        raise FetchError(explain_x_error(r))
     return r.json()["data"]["id"]
 
 
@@ -169,10 +183,10 @@ def get_new_tweets(uid, since):
     if r.status_code != 200:
         # Truoc day chi print roi tra ve [] -> nhin log tuong "khong co tweet moi"
         # va job van xanh. Gio nem loi de job do + GitHub gui mail bao.
-        raise XApiError(explain_x_error(r))
+        raise FetchError(explain_x_error(r))
     j = r.json()
     if "data" not in j and j.get("errors"):
-        raise XApiError(f"X API tra ve loi: {str(j['errors'])[:300]}")
+        raise FetchError(f"X API tra ve loi: {str(j['errors'])[:300]}")
     media_map = {m["media_key"]: m for m in j.get("includes", {}).get("media", [])}
     out = []
     for tw in j.get("data", []):
@@ -191,6 +205,56 @@ def get_new_tweets(uid, since):
             tw["text"] = note
         out.append(tw)
     return list(reversed(out))  # cu -> moi
+
+
+def get_new_tweets_fx(since):
+    """Doc tweet qua FxTwitter (mien phi, khong can key). Tra ve cu -> moi,
+    cung dinh dang voi get_new_tweets() de phan dang bai dung chung."""
+    out, cursor = [], None
+    for _ in range(FX_MAX_PAGES):
+        params = {"count": 20}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            r = requests.get(f"{FX_API_BASE}/2/profile/{USERNAME}/statuses",
+                             params=params, timeout=30,
+                             headers={"User-Agent": "tweet-square-sync"})
+        except requests.RequestException as e:
+            raise FetchError(f"Khong ket noi duoc FxTwitter: {e}")
+        if r.status_code != 200:
+            raise FetchError(f"FxTwitter loi {r.status_code}: {r.text[:300]}")
+        j = r.json()
+        page = j.get("results") or []
+        reached_old = False
+        for tw in page:
+            # So sanh id theo so (id la chuoi) - tweet cu hon/bang moc thi dung.
+            if since and int(tw["id"]) <= int(since):
+                reached_old = True
+                continue
+            # Bo reply va repost (giong EXCLUDE=retweets,replies cua X API).
+            if tw.get("replying_to") or tw.get("reposted_by"):
+                continue
+            media = (tw.get("media") or {}).get("all") or []
+            photos = [m["url"] for m in media if m.get("type") == "photo" and m.get("url")]
+            out.append({
+                "id": tw["id"],
+                "text": tw.get("text", ""),
+                "_photos": photos[:4],
+                "_has_other_media": any(m.get("type") in ("video", "gif") for m in media),
+            })
+        cursor = (j.get("cursor") or {}).get("bottom")
+        # Lan dau chay (chua co moc) chi can trang dau de lay tweet moi nhat.
+        if reached_old or not since or not page or not cursor:
+            break
+    # Tweet ghim co the nam dau danh sach -> sap xep lai theo id cho chac.
+    out.sort(key=lambda t: int(t["id"]))
+    return out
+
+
+def fetch_new_tweets(since):
+    if SOURCE == "fxtwitter":
+        return get_new_tweets_fx(since)
+    return get_new_tweets(resolve_user_id(), since)
 
 
 def strip_trailing_tco(text):
@@ -270,11 +334,10 @@ def resolve_user_id():
 
 
 def main():
-    uid = resolve_user_id()
     last = read_state()
 
     if last is None:
-        base = get_new_tweets(uid, None)
+        base = fetch_new_tweets(None)
         if base:
             write_state(base[-1]["id"])
             print(f"[i] Lan dau chay: dat moc tu tweet moi nhat (id={base[-1]['id']}).")
@@ -283,7 +346,7 @@ def main():
             print("[i] Lan dau chay: chua thay tweet nao.")
         return 0
 
-    tweets = get_new_tweets(uid, last)
+    tweets = fetch_new_tweets(last)
     if not tweets:
         print("[i] Khong co tweet moi.")
         return 0
@@ -348,6 +411,6 @@ def is_account_error(e):
 if __name__ == "__main__":
     try:
         sys.exit(main() or 0)
-    except XApiError as e:
+    except FetchError as e:
         print(f"[LOI] {e}")
         sys.exit(2)

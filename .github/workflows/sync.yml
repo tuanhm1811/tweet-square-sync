@@ -35,11 +35,14 @@ jobs:
     env:
       # >>> @username X cua ban (bo dau @) <<<
       TWITTER_USERNAME: "OnchainDataNerd"
+      # Nguon doc tweet: "fxtwitter" = MIEN PHI, khong can key X (mac dinh).
+      # "xapi" = X API chinh thuc (can 4 secret TWITTER_*, tra phi theo luot).
+      SOURCE: "fxtwitter"
       # 23 vong x 15 phut ~= 5h45m.
       ITERATIONS: "23"
       SLEEP_SECONDS: "900"
-      # Neu lich bi bo nhieu gio va account tweet hon 10 bai, X tra ve 10 bai
-      # MOI NHAT roi last_id nhay thang len do => mat bai o giua. 100 la tran.
+      # (xapi) Neu lich bi bo nhieu gio va account tweet hon 10 bai, X tra ve
+      # 10 bai MOI NHAT roi last_id nhay thang len do => mat bai. 100 la tran.
       MAX_RESULTS: "100"
     steps:
       - uses: actions/checkout@v5
