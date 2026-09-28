@@ -1,15 +1,14 @@
 # ============================================================
 #  .github/workflows/sync.yml
 #
-#  TAI SAO JOB CHAY GAN 6 TIENG + TU GOI LAI CHINH NO:
+#  TAI SAO JOB TU GOI LAI CHINH NO:
 #  Scheduled workflow cua GitHub la best-effort va bi throttle rat nang:
 #  cron '5,20,35,50 * * * *' -> con 3 run/ngay (27/08); cron '3 * * * *'
 #  -> van chi 5-8 run/ngay, moi run 45 phut => chi phu ~4-5 tieng/ngay.
 #  Giai phap:
-#   - 1 job lap 23 vong x 15 phut (~5h45m, duoi gioi han 6h cua GitHub).
-#   - Cuoi job tu kich hoat run tiep theo bang workflow_dispatch
-#     (GITHUB_TOKEN duoc phep trigger workflow_dispatch) => chay lien tuc.
-#   - Cron moi gio giu lai lam DU PHONG neu chuoi tu goi bi dut.
+#   - Moi job: kiem tra 1 lan -> ngu 3 tieng -> tu kich hoat run tiep theo
+#     bang workflow_dispatch (GITHUB_TOKEN duoc phep) => ~3 tieng/lan, deu.
+#   - Cron 3 tieng/lan giu lai lam DU PHONG neu chuoi tu goi bi dut.
 #   - concurrency: chi 1 run chay, 1 run cho; khong bao gio chay chong.
 #  Repo public => Actions minutes mien phi khong gioi han.
 # ============================================================
@@ -17,7 +16,7 @@ name: Tweet to Binance Square
 
 on:
   schedule:
-    - cron: '3 * * * *'
+    - cron: '3 */3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -31,16 +30,17 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 240
     env:
       # >>> @username X cua ban (bo dau @) <<<
       TWITTER_USERNAME: "OnchainDataNerd"
       # Nguon doc tweet: "fxtwitter" = MIEN PHI, khong can key X (mac dinh).
       # "xapi" = X API chinh thuc (can 4 secret TWITTER_*, tra phi theo luot).
       SOURCE: "fxtwitter"
-      # 23 vong x 15 phut ~= 5h45m.
-      ITERATIONS: "23"
-      SLEEP_SECONDS: "900"
+      # So lan kiem tra trong 1 job, va thoi gian ngu SAU moi lan kiem tra.
+      # 1 x 3 tieng => cu ~3 tieng kiem tra 1 lan. (Muon 1 tieng: "3600".)
+      ITERATIONS: "1"
+      SLEEP_SECONDS: "10800"
       # (xapi) Neu lich bi bo nhieu gio va account tweet hon 10 bai, X tra ve
       # 10 bai MOI NHAT roi last_id nhay thang len do => mat bai. 100 la tran.
       MAX_RESULTS: "100"
@@ -54,7 +54,7 @@ jobs:
       - name: Cai thu vien
         run: pip install requests requests-oauthlib
 
-      - name: Dong bo tweet -> Binance Square (lap ~6 gio)
+      - name: Dong bo tweet -> Binance Square
         env:
           TWITTER_API_KEY:            ${{ secrets.TWITTER_API_KEY }}
           TWITTER_API_SECRET:         ${{ secrets.TWITTER_API_SECRET }}
@@ -91,7 +91,8 @@ jobs:
 
             echo "::endgroup::"
 
-            if [[ "$i" -lt "$ITERATIONS" ]]; then sleep "$SLEEP_SECONDS"; fi
+            # Ngu ca sau vong cuoi: run tiep theo chi duoc goi khi ngu xong.
+            sleep "$SLEEP_SECONDS"
           done
 
           echo "failed=$failed" >> "$GITHUB_ENV"

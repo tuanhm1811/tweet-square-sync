@@ -1,7 +1,7 @@
 # Tweet → Binance Square Sync
 
 Tự động lấy **tweet mới** từ một tài khoản X (Twitter) — kèm ảnh — và **đăng lại lên Binance Square**.
-Chạy hoàn toàn miễn phí trên **GitHub Actions** (kiểm tra ~15 phút/lần), không cần server riêng.
+Chạy hoàn toàn miễn phí trên **GitHub Actions** (kiểm tra ~3 tiếng/lần, chỉnh bằng `SLEEP_SECONDS` trong `sync.yml`), không cần server riêng.
 
 > **Mặc định KHÔNG cần X API** (không tốn credit): tweet được đọc qua
 > [FxTwitter](https://github.com/FxEmbed/FxEmbed) (`api.fxtwitter.com`), miễn phí, không cần key.
