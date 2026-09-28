@@ -1,12 +1,16 @@
 # ============================================================
 #  .github/workflows/sync.yml
 #
-#  TAI SAO CHI CON 1 CRON/GIO:
-#  Cron cu la '5,20,35,50 * * * *' (96 run/ngay) nhung GitHub bo gan het:
-#  24-25/08 chi chay ~35 run/ngay, den 27/08 con 3 run/ngay, khoang cach
-#  giua 2 run len toi 8-10 tieng. Scheduled workflow la best-effort va bi
-#  throttle theo tan suat. Nen: chi xin 1 trigger/gio (GitHub gan nhu luon
-#  cho chay), roi giu do min 15 phut bang vong lap sleep BEN TRONG job.
+#  TAI SAO JOB CHAY GAN 6 TIENG + TU GOI LAI CHINH NO:
+#  Scheduled workflow cua GitHub la best-effort va bi throttle rat nang:
+#  cron '5,20,35,50 * * * *' -> con 3 run/ngay (27/08); cron '3 * * * *'
+#  -> van chi 5-8 run/ngay, moi run 45 phut => chi phu ~4-5 tieng/ngay.
+#  Giai phap:
+#   - 1 job lap 23 vong x 15 phut (~5h45m, duoi gioi han 6h cua GitHub).
+#   - Cuoi job tu kich hoat run tiep theo bang workflow_dispatch
+#     (GITHUB_TOKEN duoc phep trigger workflow_dispatch) => chay lien tuc.
+#   - Cron moi gio giu lai lam DU PHONG neu chuoi tu goi bi dut.
+#   - concurrency: chi 1 run chay, 1 run cho; khong bao gio chay chong.
 #  Repo public => Actions minutes mien phi khong gioi han.
 # ============================================================
 name: Tweet to Binance Square
@@ -18,6 +22,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # de job tu goi lai chinh no
 
 concurrency:
   group: tweet-sync
@@ -26,16 +31,15 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 355
     env:
       # >>> @username X cua ban (bo dau @) <<<
       TWITTER_USERNAME: "OnchainDataNerd"
-      # 4 vong x 15 phut = phu kin 1 gio, dung bang nhip cron cu.
-      ITERATIONS: "4"
+      # 23 vong x 15 phut ~= 5h45m.
+      ITERATIONS: "23"
       SLEEP_SECONDS: "900"
-      # Truoc day de mac dinh 10. Neu lich bi bo nhieu gio va account tweet
-      # hon 10 bai, X tra ve 10 bai MOI NHAT roi last_id nhay thang len do
-      # => so bai o giua bi mat vinh vien. 100 la tran cua X API v2.
+      # Neu lich bi bo nhieu gio va account tweet hon 10 bai, X tra ve 10 bai
+      # MOI NHAT roi last_id nhay thang len do => mat bai o giua. 100 la tran.
       MAX_RESULTS: "100"
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +51,7 @@ jobs:
       - name: Cai thu vien
         run: pip install requests requests-oauthlib
 
-      - name: Dong bo tweet -> Binance Square (lap trong 1 gio)
+      - name: Dong bo tweet -> Binance Square (lap ~6 gio)
         env:
           TWITTER_API_KEY:            ${{ secrets.TWITTER_API_KEY }}
           TWITTER_API_SECRET:         ${{ secrets.TWITTER_API_SECRET }}
@@ -58,14 +62,19 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          failed=0
           for i in $(seq 1 "$ITERATIONS"); do
             echo "::group::Vong $i/$ITERATIONS - $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-            # Mot vong loi KHONG duoc lam chet ca job: cac vong sau van phai chay.
-            python tweet_to_square_ci.py || echo "[!] Vong $i loi, se thu lai o vong sau."
+            # Mot vong loi KHONG lam chet ca job (cac vong sau van chay),
+            # nhung duoc ghi nhan de cuoi job bao DO + GitHub gui mail.
+            if ! python tweet_to_square_ci.py; then
+              failed=$((failed + 1))
+              echo "::warning::Vong $i loi (xem log phia tren)."
+            fi
 
             if [[ -n "$(git status --porcelain state/)" ]]; then
-              git add state/
+              git add -A state/
               git commit -q -m "update last tweet id [skip ci]"
             fi
 
@@ -81,3 +90,17 @@ jobs:
 
             if [[ "$i" -lt "$ITERATIONS" ]]; then sleep "$SLEEP_SECONDS"; fi
           done
+
+          echo "failed=$failed" >> "$GITHUB_ENV"
+
+      - name: Tu kich hoat run tiep theo
+        if: always() && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run sync.yml --ref "${{ github.ref_name }}" || echo "[!] Khong tu goi lai duoc, cho cron du phong."
+
+      - name: Bao loi neu co vong that bai
+        if: env.failed != '' && env.failed != '0'
+        run: |
+          echo "::error::${{ env.failed }}/${{ env.ITERATIONS }} vong bi loi - mo buoc 'Dong bo tweet' de xem chi tiet."
+          exit 1
