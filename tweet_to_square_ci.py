@@ -138,7 +138,9 @@ def explain_x_error(r):
     }.get(r.status_code, "")
     extra = ""
     reset = r.headers.get("x-rate-limit-reset")
-    if reset:
+    # Header nay la gio reset RATE LIMIT, chi co y nghia voi 429 (402 het
+    # credit thi phai nap tien, khong tu reset).
+    if reset and r.status_code == 429:
         extra = f" | reset luc {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime(int(reset)))}"
     return f"X API loi {r.status_code}: {r.text[:300]} {hint}{extra}".strip()
 
