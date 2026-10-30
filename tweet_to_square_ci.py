@@ -39,6 +39,10 @@ FX_API_BASE = os.environ.get("FX_API_BASE", "https://api.fxtwitter.com")
 # FxTwitter tra toi da 20 tweet/trang; 5 trang = 100 tweet la du bu khi bot
 # bi dung lau.
 FX_MAX_PAGES = int(os.environ.get("FX_MAX_PAGES", "5"))
+# FxTwitter thinh thoang tra 404 ngau nhien (~40 run do trong 10/2026) -> thu lai
+# trong cung 1 lan chay truoc khi bao loi.
+FX_ATTEMPTS   = int(os.environ.get("FX_ATTEMPTS", "3"))
+FX_RETRY_WAIT = int(os.environ.get("FX_RETRY_WAIT", "30"))
 EXCLUDE     = os.environ.get("EXCLUDE", "retweets,replies")
 MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "10"))
 X_API_BASE  = os.environ.get("X_API_BASE", "https://api.twitter.com/2")  # loi thi doi sang https://api.x.com/2
@@ -52,6 +56,9 @@ FAIL_FILE   = Path(os.environ.get("FAIL_FILE", "state/fail_count.txt"))
 # Tweet bi Square tu choi (ma loi noi dung) qua so lan nay -> bo qua de khong
 # chan cac tweet sau mai mai.
 MAX_FAILS   = int(os.environ.get("MAX_FAILS", "5"))
+# Square tu choi bai co qua nhieu ma coin (loi 220095), gioi han khong duoc cong
+# bo: 3 ma da dang duoc, 8 ma bi tu choi -> khi gap loi nay chi giu 3 ma dau.
+MAX_CASHTAGS = int(os.environ.get("MAX_CASHTAGS", "3"))
 
 # Binance Square endpoints
 SQ_V1 = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi"
@@ -66,6 +73,8 @@ CT_MAP = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
 # anh/tweet goc tren Twitter) -> bo di cho khoi thua khi dang len Square.
 # Chi bo link dinh o cuoi; link ban co tinh dan o giua cau van duoc giu.
 TRAILING_TCO_RE = re.compile(r"\s*(?:https?://t\.co/\w+\s*)+$")
+# Ma coin dang $ETH; so tien nhu $26.05M bat dau bang so nen khong khop.
+CASHTAG_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9]*)")
 
 # Ma loi hay gap cua Square -> giai thich de hieu
 SQ_ERR = {
@@ -73,7 +82,9 @@ SQ_ERR = {
     "220014": "Da vuot gioi han upload anh trong ngay.",
     "20013":  "Noi dung qua dai/khong hop le.",
     "220003": "API key Square khong ton tai/da bi thu hoi -> tao key moi.",
+    "220095": "Bai co qua nhieu ma coin ($ETH, $BTC...).",
 }
+SQ_TOO_MANY_COINS = "220095"
 # Loi do tai khoan/key/han muc (KHONG phai do noi dung tweet) -> khong bao gio
 # bo qua tweet vi cac loi nay, cho het loi roi dang tiep.
 SQ_ACCOUNT_ERRORS = {"220003", "220009", "220014"}
@@ -207,6 +218,25 @@ def get_new_tweets(uid, since):
     return list(reversed(out))  # cu -> moi
 
 
+def fx_get(params):
+    """Doc 1 trang FxTwitter, loi thi thu lai toi da FX_ATTEMPTS lan."""
+    err = None
+    for attempt in range(FX_ATTEMPTS):
+        if attempt:
+            time.sleep(FX_RETRY_WAIT)
+        try:
+            r = requests.get(f"{FX_API_BASE}/2/profile/{USERNAME}/statuses",
+                             params=params, timeout=30,
+                             headers={"User-Agent": "tweet-square-sync"})
+        except requests.RequestException as e:
+            err = f"Khong ket noi duoc FxTwitter: {e}"
+            continue
+        if r.status_code == 200:
+            return r
+        err = f"FxTwitter loi {r.status_code}: {r.text[:300]}"
+    raise FetchError(err)
+
+
 def get_new_tweets_fx(since):
     """Doc tweet qua FxTwitter (mien phi, khong can key). Tra ve cu -> moi,
     cung dinh dang voi get_new_tweets() de phan dang bai dung chung."""
@@ -215,15 +245,7 @@ def get_new_tweets_fx(since):
         params = {"count": 20}
         if cursor:
             params["cursor"] = cursor
-        try:
-            r = requests.get(f"{FX_API_BASE}/2/profile/{USERNAME}/statuses",
-                             params=params, timeout=30,
-                             headers={"User-Agent": "tweet-square-sync"})
-        except requests.RequestException as e:
-            raise FetchError(f"Khong ket noi duoc FxTwitter: {e}")
-        if r.status_code != 200:
-            raise FetchError(f"FxTwitter loi {r.status_code}: {r.text[:300]}")
-        j = r.json()
+        j = fx_get(params).json()
         page = j.get("results") or []
         reached_old = False
         for tw in page:
@@ -260,6 +282,20 @@ def fetch_new_tweets(since):
 def strip_trailing_tco(text):
     """Bo cac link t.co dinh o CUOI text (link anh/tweet goc do X tu gan)."""
     return TRAILING_TCO_RE.sub("", text).strip()
+
+
+def limit_cashtags(text, keep):
+    """Chi giu `keep` ma coin dau tien; ma sau bo dau $ ($LINK -> LINK)."""
+    kept = set()
+
+    def replace(m):
+        coin = m.group(1).upper()
+        if coin in kept or len(kept) < keep:
+            kept.add(coin)
+            return m.group(0)
+        return m.group(1)
+
+    return CASHTAG_RE.sub(replace, text)
 
 
 # ---------- Binance Square ----------
@@ -369,7 +405,16 @@ def main():
         except Exception as e:
             print(f"   [!] Loi khi dang: {e}")
             err = e
-            if photos and not is_account_error(e):
+            if isinstance(e, SquareError) and e.code == SQ_TOO_MANY_COINS:
+                print(f"   -> Qua nhieu ma coin: chi giu {MAX_CASHTAGS} ma dau roi dang lai...")
+                text = limit_cashtags(text, MAX_CASHTAGS)
+                try:
+                    post_to_square(text, photos)
+                    err = None
+                except Exception as e2:
+                    print(f"   [!] Van loi: {e2}")
+                    err = e2
+            if err is not None and photos and not is_account_error(err):
                 print("   -> Thu dang lai chi voi chu...")
                 try:
                     post_to_square(text, [])
